@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+
+import argparse
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLATFORMS = (
+    ("darwin", "amd64"),
+    ("darwin", "arm64"),
+    ("linux", "amd64"),
+    ("linux", "arm64"),
+    ("windows", "amd64"),
+    ("windows", "arm64"),
+)
+DOCUMENTS = ("README.md", "LICENSE", "THIRD_PARTY_NOTICES")
+
+
+def git(*args):
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def metadata():
+    values = {
+        "Version": os.environ.get("VERSION")
+        or git("describe", "--tags", "--exact-match", "HEAD")
+        or "dev",
+        "Commit": os.environ.get("COMMIT") or git("rev-parse", "HEAD") or "unknown",
+        "BuildDate": os.environ.get("BUILD_DATE")
+        or git("log", "-1", "--format=%cI")
+        or "unknown",
+    }
+    for name, value in values.items():
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+-]*", value):
+            raise ValueError(
+                f"Invalid {name}: use letters, numbers, '.', '_', ':', '+', or '-'."
+            )
+    return values
+
+
+def go_env(name):
+    return subprocess.check_output(["go", "env", name], cwd=ROOT, text=True).strip()
+
+
+def build(destination, values, platform=None):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["CGO_ENABLED"] = "0"
+    if platform:
+        environment["GOOS"], environment["GOARCH"] = platform
+    ldflags = ["-s", "-w", *(f"-X=main.{name}={value}" for name, value in values.items())]
+    subprocess.run(
+        [
+            "go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false",
+            "-ldflags", " ".join(ldflags), "-o", str(destination), ".",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+    )
+
+
+def binary_name(goos):
+    return "cuentica.exe" if goos == "windows" else "cuentica"
+
+
+def archive_names(values):
+    return {
+        platform: f"cuentica_{values['Version']}_{platform[0]}_{platform[1]}"
+        + (".zip" if platform[0] == "windows" else ".tar.gz")
+        for platform in PLATFORMS
+    }
+
+
+def source_epoch():
+    value = os.environ.get("SOURCE_DATE_EPOCH") or git("log", "-1", "--format=%ct") or "0"
+    if not value.isdecimal() or not 0 <= int(value) <= 4294967295:
+        raise ValueError("SOURCE_DATE_EPOCH must be an integer between 0 and 4294967295.")
+    return int(value)
+
+
+def check_destination(destination, names, complete=False):
+    if destination.is_symlink():
+        raise ValueError("dist must be a directory, not a symlink.")
+    expected = {*names.values(), "checksums.txt"}
+    if destination.exists():
+        actual = {path.name for path in destination.iterdir()}
+        if actual - expected:
+            raise ValueError("dist contains unexpected files; move them or run just clean first.")
+        if any(path.is_symlink() or not path.is_file() for path in destination.iterdir()):
+            raise ValueError("dist must contain only regular release files.")
+    else:
+        actual = set()
+    if complete and actual != expected:
+        raise ValueError("Release assets are incomplete; run the release build first.")
+
+
+def package(archive, files, epoch):
+    if archive.suffix == ".zip":
+        timestamp = time.gmtime(max(315532800, min(epoch, 4354819198)))[:6]
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            for path, name, mode in files:
+                member = zipfile.ZipInfo(name, timestamp)
+                member.create_system = 3
+                member.external_attr = (stat.S_IFREG | mode) << 16
+                member.compress_type = zipfile.ZIP_DEFLATED
+                output.writestr(member, path.read_bytes())
+    else:
+        with archive.open("wb") as compressed:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=compressed, mtime=epoch) as stream:
+                with tarfile.open(fileobj=stream, mode="w") as output:
+                    for path, name, mode in files:
+                        member = tarfile.TarInfo(name)
+                        member.size = path.stat().st_size
+                        member.mode = mode
+                        member.mtime = epoch
+                        with path.open("rb") as source:
+                            output.addfile(member, source)
+
+
+def release(values):
+    for name in DOCUMENTS:
+        if not (ROOT / name).is_file() or (ROOT / name).is_symlink():
+            raise ValueError(f"Required release document is missing or not a regular file: {name}")
+    names = archive_names(values)
+    destination = ROOT / "dist"
+    check_destination(destination, names)
+    epoch = source_epoch()
+    with tempfile.TemporaryDirectory(prefix="cuentica-release-") as temporary:
+        stage = Path(temporary)
+        for platform, name in names.items():
+            binary = stage / binary_name(platform[0])
+            build(binary, values, platform)
+            files = [(binary, binary.name, 0o755)]
+            files.extend((ROOT / name, name, 0o644) for name in DOCUMENTS)
+            package(stage / name, files, epoch)
+            binary.unlink()
+        (stage / "checksums.txt").write_text(
+            "".join(
+                f"{hashlib.sha256((stage / name).read_bytes()).hexdigest()}  {name}\n"
+                for name in sorted(names.values())
+            ),
+            encoding="utf-8",
+        )
+        destination.mkdir(exist_ok=True)
+        for name in [*names.values(), "checksums.txt"]:
+            shutil.copyfile(stage / name, destination / name)
+            print((destination / name).relative_to(ROOT))
+
+
+def read_binary(archive, goos):
+    expected = {binary_name(goos), *DOCUMENTS}
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as source:
+            members = source.infolist()
+            if len(members) != len(expected) or {member.filename for member in members} != expected:
+                raise ValueError(f"Unexpected archive members: {archive.name}")
+            for member in members:
+                mode = member.external_attr >> 16
+                wanted_mode = 0o755 if member.filename == binary_name(goos) else 0o644
+                if not stat.S_ISREG(mode) or stat.S_IMODE(mode) != wanted_mode:
+                    raise ValueError(f"Invalid archive member type or mode: {member.filename}")
+            return source.read(binary_name(goos))
+    with tarfile.open(archive, "r:gz") as source:
+        members = source.getmembers()
+        if len(members) != len(expected) or {member.name for member in members} != expected:
+            raise ValueError(f"Unexpected archive members: {archive.name}")
+        for member in members:
+            wanted_mode = 0o755 if member.name == binary_name(goos) else 0o644
+            if not member.isfile() or member.mode != wanted_mode:
+                raise ValueError(f"Invalid archive member type or mode: {member.name}")
+        with source.extractfile(binary_name(goos)) as binary:
+            return binary.read()
+
+
+def verify_binary(binary, platform):
+    output = subprocess.check_output(["go", "version", "-m", str(binary)], text=True, cwd=ROOT)
+    settings = {}
+    for line in output.splitlines():
+        fields = line.strip().split("\t", 1)
+        if len(fields) == 2 and fields[0] == "build":
+            key, _, value = fields[1].partition("=")
+            settings[key] = value
+    for key, expected in {"GOOS": platform[0], "GOARCH": platform[1], "CGO_ENABLED": "0", "-trimpath": "true"}.items():
+        if settings.get(key) != expected:
+            raise ValueError(f"Unexpected {key} in {platform[0]}/{platform[1]} binary.")
+
+
+def smoke(binary, values):
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "CUENTICA_API_KEY"}
+
+    def invoke(*args):
+        result = subprocess.run(
+            [str(binary), *args], env=environment, text=True, capture_output=True,
+            check=True, timeout=15,
+        )
+        if result.stderr:
+            raise ValueError(f"Unexpected stderr from smoke test: {args[0]}")
+        return result.stdout
+
+    expected = f"cuentica {values['Version']} (commit {values['Commit']}, built {values['BuildDate']})"
+    if invoke("--version").strip() != expected:
+        raise ValueError("Native binary version does not match release metadata.")
+    if "cuentica" not in invoke("--help"):
+        raise ValueError("Native binary help is incomplete.")
+    operations = json.loads(invoke("api", "list", "--output", "json"))
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("Native binary operation catalog is empty.")
+    preview = json.loads(invoke("company", "get", "--dry-run", "--output", "json"))
+    if preview.get("method") != "GET" or preview.get("path") != "/company":
+        raise ValueError("Native binary dry run produced an unexpected request.")
+
+
+def verify(values, run=False):
+    names = archive_names(values)
+    destination = ROOT / "dist"
+    check_destination(destination, names, complete=True)
+    checksums = {}
+    for line in (destination / "checksums.txt").read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"([a-f0-9]{64})  (.+)", line)
+        if not match or match[2] in checksums:
+            raise ValueError("Malformed or duplicate release checksum.")
+        checksums[match[2]] = match[1]
+    if set(checksums) != set(names.values()):
+        raise ValueError("Checksums must cover exactly the six release archives.")
+    native = (go_env("GOHOSTOS"), go_env("GOHOSTARCH")) if run else None
+    if run and native not in names:
+        raise ValueError("No release binary matches this host platform.")
+    with tempfile.TemporaryDirectory(prefix="cuentica-verify-") as temporary:
+        for platform, name in names.items():
+            archive = destination / name
+            if hashlib.sha256(archive.read_bytes()).hexdigest() != checksums[name]:
+                raise ValueError(f"Checksum mismatch: {name}")
+            binary = Path(temporary) / binary_name(platform[0])
+            binary.write_bytes(read_binary(archive, platform[0]))
+            verify_binary(binary, platform)
+            if platform == native:
+                binary.chmod(0o755)
+                smoke(binary, values)
+            binary.unlink()
+    print("Verified six release archives" + (" and native binary smoke tests." if run else "."))
+
+
+def clean():
+    for name in ("bin", "dist"):
+        path = ROOT / name
+        if path.is_symlink():
+            path.unlink()
+        elif path.exists():
+            shutil.rmtree(path)
+    (ROOT / "coverage.out").unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build and package the Cuéntica CLI.")
+    parser.add_argument("command", choices=("build", "install", "release", "verify", "clean"))
+    parser.add_argument("--run", action="store_true", help="Smoke-test the native binary during verification.")
+    args = parser.parse_args()
+    if args.run and args.command != "verify":
+        parser.error("--run is only supported with verify")
+    if args.command == "clean":
+        clean()
+        return
+    values = metadata()
+    if args.command == "release":
+        release(values)
+        return
+    if args.command == "verify":
+        verify(values, args.run)
+        return
+    name = "cuentica.exe" if go_env("GOOS") == "windows" else "cuentica"
+    if args.command == "install":
+        gobin = go_env("GOBIN")
+        destination = (
+            Path(gobin)
+            if gobin
+            else Path(go_env("GOPATH").split(os.pathsep)[0]) / "bin"
+        )
+    else:
+        destination = ROOT / "bin"
+    build(destination / name, values)
+    print(destination / name)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
+        print(f"Build failed: {error}", file=sys.stderr)
+        sys.exit(1)

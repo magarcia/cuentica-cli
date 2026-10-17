@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CUENTICA_API_KEY: ''
+  GOTOOLCHAIN: local
+  VERSION: ${{ github.ref_name }}
+  COMMIT: ${{ github.sha }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Validate semantic version
+        id: tag
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          number = r"(0|[1-9][0-9]*)"
+          identifiers = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
+          pattern = rf"v{number}\.{number}\.{number}(?:-({identifiers}))?(?:\+{identifiers})?"
+          match = re.fullmatch(pattern, version)
+          if match is None:
+              raise SystemExit("Release tags must use SemVer, for example v1.2.3 or v1.2.3-rc.1.")
+          prerelease = match.group(4)
+          if prerelease and any(part.isdecimal() and len(part) > 1 and part[0] == "0" for part in prerelease.split(".")):
+              raise SystemExit("Numeric prerelease identifiers can't have leading zeroes.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"prerelease={str(prerelease is not None).lower()}", file=output)
+          PY
+
+  ci:
+    name: CI
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  package:
+    name: Package six platforms
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Build release archives
+        run: ./scripts/build release
+      - name: Verify archives and checksums
+        run: ./scripts/build verify --run
+      - name: Attest release archives
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+      - name: Store release archives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-archives
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  smoke:
+    name: Smoke release (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Download release archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-archives
+          path: dist
+      - name: Verify and run native archive
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            python scripts/build verify --run
+          else
+            ./scripts/build verify --run
+          fi
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+    steps:
+      - name: Download verified archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-archives
+          path: dist
+      - name: Upload assets and publish
+        run: |
+          if draft="$(gh release view "$VERSION" --json isDraft --jq '.isDraft')"; then
+            if [[ "$draft" != true ]]; then
+              printf 'Release %s is already published; refusing to replace its assets.\n' "$VERSION" >&2
+              exit 1
+            fi
+          else
+            gh release create "$VERSION" --verify-tag --draft --generate-notes \
+              --title "$VERSION" --prerelease="$PRERELEASE"
+          fi
+          gh release upload "$VERSION" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
+          latest=true
+          if [[ "$PRERELEASE" == true ]]; then latest=false; fi
+          gh release edit "$VERSION" --verify-tag --draft=false \
+            --prerelease="$PRERELEASE" --latest="$latest"

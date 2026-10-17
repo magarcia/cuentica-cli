@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible CLI problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys, personal data, and financial records from commands and output.
+        Report security vulnerabilities using [SECURITY.md](https://github.com/magarcia/cuentica-cli/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: CLI version
+      description: Paste the output of cuentica --version.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: macOS arm64, Linux amd64, or Windows amd64
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command and a minimal example using fake data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the error code and sanitized output.
+    validations:
+      required: true

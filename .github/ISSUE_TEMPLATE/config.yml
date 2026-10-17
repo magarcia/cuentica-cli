@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Cuéntica API documentation
+    url: https://apidocs.cuentica.com/versions/latest_release/
+    about: Check API fields, filters, and business rules.
