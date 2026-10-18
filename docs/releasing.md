@@ -93,6 +93,23 @@ Every archive includes `cuentica` or `cuentica.exe`, `README.md`, `LICENSE`, and
 
 Release binaries aren't code signed or notarized. GitHub attestations identify the repository workflow that built an archive; they don't replace OS code signing. Native smoke tests cover the runner's architecture. ARM64 binaries on other operating systems are cross-compiled and inspected, but don't all run on native CI hardware.
 
+## Update Homebrew
+
+Homebrew is the default installation method on macOS and Linux:
+
+```sh
+brew install magarcia/tap/cuentica
+```
+
+After publishing each stable release, update [magarcia/homebrew-tap](https://github.com/magarcia/homebrew-tap). Publishing a GitHub Release doesn't update the tap automatically.
+
+1. In `~/dev/homebrew-tap/Formula/cuentica.rb`, replace the four archive URLs with the new release's macOS/Linux ARM64/amd64 URLs. Homebrew infers the version from the URL.
+2. Replace the four SHA-256 values with the matching entries from the release's `checksums.txt`.
+3. Publish the formula change and wait for the tap's Cuéntica workflow to pass installation, completions, functional tests, and audits on all four targets.
+4. Check `brew update`, `brew upgrade magarcia/tap/cuentica`, and `cuentica --version` against the new release.
+
+Keep the tap's README and this repository's installation instructions consistent. Prereleases remain available as GitHub downloads.
+
 ## Verify a published release
 
 Download assets from a specific release into an empty directory:

@@ -19,6 +19,17 @@ This project isn't affiliated with or supported by Cuéntica.
 
 ## Install
 
+### Homebrew
+
+On macOS or Linux, install the release binary and shell completions:
+
+```sh
+brew install magarcia/tap/cuentica
+cuentica --version
+```
+
+This supports Intel/AMD and ARM64. To upgrade, run `brew update` followed by `brew upgrade magarcia/tap/cuentica`.
+
 ### Download a binary
 
 Download an archive and `checksums.txt` from [GitHub Releases](https://github.com/magarcia/cuentica-cli/releases). The binary needs no Go, Python, or `just` installation.
