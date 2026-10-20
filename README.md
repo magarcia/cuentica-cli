@@ -8,9 +8,11 @@ Cuéntica from your terminal. Manage invoices, income, expenses, contacts, and
 documents with one binary, readable tables, and structured output for scripts
 and agents.
 
+Cuéntica is online invoicing and accounting software for freelancers and small businesses.
+
 Unofficial client for the [Cuéntica API](https://apidocs.cuentica.com/versions/latest_release/),
 covering all 54 documented operations. This project isn't affiliated with or
-supported by Cuéntica.
+supported by [Cuéntica](https://cuentica.com/).
 
 ## Install
 
