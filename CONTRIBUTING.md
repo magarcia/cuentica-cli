@@ -4,7 +4,7 @@ Keep changes focused. For new commands or behavior changes, describe the user pr
 
 ## Set up
 
-Install Go 1.25 or newer, Python 3.11 or newer, [just](https://github.com/casey/just), and Bash. Windows contributors can run the `just` recipes in Git Bash or WSL.
+Install Go 1.26 or newer, Python 3.11 or newer, [just](https://github.com/casey/just), and Bash. Windows contributors can run the `just` recipes in Git Bash or WSL.
 
 ```sh
 just build
