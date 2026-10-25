@@ -65,7 +65,7 @@ The workflow runs these stages before publication:
 
 | Stage | Checks or output |
 | --- | --- |
-| CI | Tests and native builds on Linux, macOS, and Windows with Go 1.25 and current stable Go; Linux race checks |
+| CI | Tests and native builds on Linux, macOS, and Windows with Go 1.26 and current stable Go; Linux race checks |
 | Package | Cross-compile six binaries with `CGO_ENABLED=0`, archive them, and calculate SHA-256 checksums |
 | Verify | Validate archive contents, target metadata, and checksums; smoke-test native archives on all three operating systems |
 | Attest | Record GitHub build provenance for the six archives and checksum manifest in a public repository |

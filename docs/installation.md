@@ -60,7 +60,7 @@ gh attestation verify cuentica_v0.1.0_darwin_arm64.tar.gz --repo magarcia/cuenti
 
 ## Build from source
 
-Requires Go 1.25 or newer, Python 3.11 or newer, [just](https://github.com/casey/just), and Bash. On Windows, use Git Bash or WSL for the `just` recipes.
+Requires Go 1.26 or newer, Python 3.11 or newer, [just](https://github.com/casey/just), and Bash. On Windows, use Git Bash or WSL for the `just` recipes.
 
 ```sh
 git clone https://github.com/magarcia/cuentica-cli.git
