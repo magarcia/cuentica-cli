@@ -153,7 +153,8 @@ func TestBashCompletionUsesCommandContext(t *testing.T) {
 				words[i] = shellQuote(word)
 			}
 			probe := fmt.Sprintf("\nCOMP_WORDS=(%s)\nCOMP_CWORD=%d\n_cuentica_complete\nprintf '%%s\\n' \"${COMPREPLY[@]}\"\n", strings.Join(words, " "), len(words)-1)
-			cmd := exec.Command(binary, "-c", out.String()+probe)
+			cmd := exec.Command(binary, "-s")
+			cmd.Stdin = strings.NewReader(out.String() + probe)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("completion failed: %v\n%s", err, output)
